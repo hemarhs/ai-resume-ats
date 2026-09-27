@@ -16,3 +16,6 @@ __pycache__/
 
 # old code parked for deletion
 _to_delete/
+
+# Claude app screenshots (not part of the project)
+Claude outputs/
