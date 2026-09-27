@@ -8,7 +8,8 @@ from groq import Groq
 logger=logging.getLogger('ats_resume_scorer')
 
 
-GROQ_MODEL='llama-3.3-70b-versatile'
+from backend.core.config import GROQ_MODEL
+from backend.services.local_parser import parse_resume_locally, parse_jd_locally
 
 _client=None
 
@@ -84,7 +85,9 @@ def _call_groq(client:Groq, system_prompt:str, user_prompt:str)->str:
             {'role': 'user', 'content': user_prompt}
         ],
         temperature=0.0,
-        max_tokens=4096
+        max_tokens=4096,
+        response_format={'type': 'json_object'},
+        timeout=60,
     )
 
     return response.choices[0].message.content.strip()
@@ -108,14 +111,27 @@ def _try_parse_json(text: str) -> dict | None:
     except json.JSONDecodeError:
         return None
     
-def parse_resume(raw_text: str)->Dict:
+def parse_resume(raw_text: str) -> Dict:
+    """Parse with Groq; fall back to the offline rule-based parser on any failure."""
+    if not os.getenv('GROQ_API_KEY'):
+        logger.info('GROQ_API_KEY not set — using local resume parser')
+        return _validate_resume_result(parse_resume_locally(raw_text))
+    try:
+        result = _parse_resume_groq(raw_text)
+        result['_parser'] = 'groq'
+        return result
+    except Exception as exc:
+        logger.warning(f'Groq resume parsing failed ({exc}) — using local parser')
+        return _validate_resume_result(parse_resume_locally(raw_text))
 
+
+def _parse_resume_groq(raw_text: str) -> Dict:
     client=_get_client()
     prompt=RESUME_USER_PROMPT.format(raw_text=raw_text)
     raw_response=_call_groq(client, RESUME_SYSTEM_PROMPT, prompt)
     result=_try_parse_json(raw_response)
 
-    if result is None:
+    if result is not None:      # BUGFIX: was `is None`, which crashed on every good response
         return _validate_resume_result(result)
     
 
@@ -161,6 +177,16 @@ Job Description Text:
 {raw_text}"""
 
 def parse_job_description(raw_text: str) -> Dict:
+    if not os.getenv('GROQ_API_KEY'):
+        return _validate_jd_result(parse_jd_locally(raw_text))
+    try:
+        return _parse_jd_groq(raw_text)
+    except Exception as exc:
+        logger.warning(f'Groq JD parsing failed ({exc}) — using local parser')
+        return _validate_jd_result(parse_jd_locally(raw_text))
+
+
+def _parse_jd_groq(raw_text: str) -> Dict:
     client = _get_client()
     prompt = JD_USER_PROMPT.format(raw_text=raw_text)
 
@@ -186,7 +212,8 @@ def parse_job_description(raw_text: str) -> Dict:
 
 #it will make sure, that the parse json has all the valid fields we expect
 def _validate_jd_result(result: dict) -> dict:
-    
+    if not isinstance(result, dict):
+        result = {}
     defaults = {
         "job_title": "",
         "required_skills": [],
@@ -208,6 +235,8 @@ def _validate_jd_result(result: dict) -> dict:
 
 #to make sure the parse json has all the valid json fields
 def _validate_resume_result(result: dict) -> dict:
+    if not isinstance(result, dict):
+        result = {}
 
     defaults = {
         "name": "",
@@ -242,11 +271,26 @@ def _validate_resume_result(result: dict) -> dict:
         exp.setdefault("end_date", "")
         exp.setdefault("duration_months", 0)
         exp.setdefault("description", "")
+        if isinstance(exp["description"], list):
+            exp["description"] = "\n".join(str(x) for x in exp["description"])
+        for k in ("job_title", "company", "start_date", "end_date", "description"):
+            if not isinstance(exp.get(k), str):
+                exp[k] = str(exp.get(k) or "")
         #Ensure duration_months is an int
         try:
             exp["duration_months"] = int(exp["duration_months"])
         except (ValueError, TypeError):
             exp["duration_months"] = 0
+
+    result["experience"] = [e for e in result["experience"] if isinstance(e, dict)]
+    result["projects"]   = [p for p in result["projects"] if isinstance(p, dict)]
+    result["education"]  = [e for e in result["education"] if isinstance(e, dict)]
+    # LLMs sometimes return skills as objects — keep plain strings only
+    for key in ("skills", "keywords", "action_verbs", "certifications"):
+        result[key] = [str(x).strip() for x in result[key] if isinstance(x, (str, int, float)) and str(x).strip()]
+    for key in ("professional_summary", "name"):
+        if not isinstance(result.get(key), str):
+            result[key] = ""
 
     #Validate project entries
     for proj in result.get("projects", []):
@@ -255,6 +299,11 @@ def _validate_resume_result(result: dict) -> dict:
         proj.setdefault("title", "")
         proj.setdefault("description", "")
         proj.setdefault("technologies", [])
+        for k in ("title", "description"):
+            if not isinstance(proj.get(k), str):
+                proj[k] = str(proj.get(k) or "")
+        if not isinstance(proj["technologies"], list):
+            proj["technologies"] = []
 
     return result
 

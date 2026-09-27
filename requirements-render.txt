@@ -1,0 +1,19 @@
+# Slim dependency set for Render's free instance (512 MB RAM).
+# Skips sentence-transformers/torch (too heavy); the app then uses its built-in
+# lightweight embedder automatically. Groq does the heavy parsing anyway.
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+python-multipart>=0.0.9
+python-dotenv>=1.0
+spacy>=3.7,<4.0
+numpy>=1.26
+rapidfuzz>=3.6
+pdfplumber>=0.11
+PyPDF2>=3.0
+python-docx>=1.1
+groq>=0.13
+PyJWT[crypto]>=2.8
+psycopg[binary]>=3.1
+httpx>=0.27
+jinja2>=3.1

@@ -1,5 +1,5 @@
 import io
-import magic
+import os
 from typing import Tuple, Optional, Tuple
 
 import pdfplumber
@@ -7,7 +7,6 @@ from docx import Document
 import PyPDF2
 
 from backend.utils.file_utils import(
-    FileParsingError, 
     TextExtractionError, 
     FileUploadError, 
     log_error, 
@@ -18,8 +17,7 @@ from backend.utils.file_utils import(
 
 from backend.core.config import (
     MAX_FILE_SIZE_BYTES,
-    MAX_FILE_SIZE_MB, 
-    SUPPORTED_MIME_TYPES
+    MAX_FILE_SIZE_MB,
 )
 
 class FileParsingError(Exception):
@@ -27,6 +25,20 @@ class FileParsingError(Exception):
 
 class FileValidationError(Exception):
     pass
+
+def _sniff_type(file_data: bytes, filename: str) -> Optional[str]:
+    """Detect file type from magic bytes (no libmagic needed — works on Windows)."""
+    ext = os.path.splitext(filename or '')[1].lower()
+    if file_data[:5] == b'%PDF-':
+        return 'pdf'
+    if file_data[:4] == b'PK\x03\x04':            # zip container → DOCX
+        if b'word/' in file_data[:200000] or ext == '.docx':
+            return 'docx'
+        return None
+    if file_data[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':   # OLE2 → legacy .doc
+        return 'doc'
+    return None
+
 
 def validate_file(file_data:bytes, filename:str)->Tuple[bool, str, Optional[str]]:
     file_size_bytes = len(file_data)
@@ -36,25 +48,15 @@ def validate_file(file_data:bytes, filename:str)->Tuple[bool, str, Optional[str]
             f'File size ({size_mb:.2f} MB) exceeds the maximum of {MAX_FILE_SIZE_MB} MB. '
             'Please upload a smaller file or compress your resume.'
         ), None
-    
-    if file_size_bytes==0:
-        return False, 'uploade file is empty...please check the file you have uploaded and try again'
-    
-    try:
-        mime_type=magic.from_buffer(file_data, mime=True)
-    except Exception as e:
-        return False, f"error deteminin the file type : {e}", None
-    
-    if mime_type not in SUPPORTED_MIME_TYPES:
-        supported=', '.join(SUPPORTED_MIME_TYPES.keys()).upper()
-        return False, (
-            f'Unsupported file type: {mime_type}. '
-            f'Please upload one of: {supported}.'
-        ), None
-    
-    
 
-    return True, '', SUPPORTED_MIME_TYPES[mime_type]
+    if file_size_bytes == 0:
+        return False, 'The uploaded file is empty. Please check the file and try again.', None
+
+    file_type = _sniff_type(file_data, filename)
+    if file_type is None:
+        return False, 'Unsupported file type. Please upload a PDF or DOCX resume.', None
+
+    return True, '', file_type
 
 def _extract_pdf_hyperlinks(file_data: bytes) -> str:
     urls = []

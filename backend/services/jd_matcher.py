@@ -1,19 +1,12 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 import numpy as np
-import spacy
-from sentence_transformers import SentenceTransformer
-
-from typing import List, Dict
-import numpy as np
-import spacy
-from sentence_transformers import SentenceTransformer
 
 from backend.utils.matching import fuzzy_match_keywords, normalize_skill
 from rapidfuzz import fuzz
 
 
 def calculate_semantic_similarity(
-    resume_text: str, jd_text: str, embedder: SentenceTransformer
+    resume_text: str, jd_text: str, embedder
 ) -> float:
     resume_emb = embedder.encode(resume_text[:5000], convert_to_tensor=False)
     jd_emb     = embedder.encode(jd_text[:5000], convert_to_tensor=False)
@@ -40,7 +33,7 @@ def identify_missing_keywords(
 
 
 def analyze_skills_gap(
-    resume_skills: List[str], jd_text: str, nlp: spacy.Language
+    resume_skills: List[str], jd_text: str, nlp
 ) -> List[str]:
     doc       = nlp(jd_text[:5000])
     jd_skills = set()
@@ -49,10 +42,14 @@ def analyze_skills_gap(
         if ent.label_ in ['PRODUCT', 'ORG', 'LANGUAGE']:
             jd_skills.add(ent.text.lower())
 
-    for chunk in doc.noun_chunks:
-        ct = chunk.text.lower().strip()
-        if 1 <= len(ct.split()) <= 4:
-            jd_skills.add(ct)
+    try:   # noun_chunks needs a dependency parser — not available in blank models
+        for chunk in doc.noun_chunks:
+            tokens = [t for t in chunk if not (t.is_stop or t.is_punct or t.pos_ == 'PRON')]
+            ct = ' '.join(t.text for t in tokens).lower().strip()
+            if ct and 1 <= len(ct.split()) <= 3 and len(ct) > 2:
+                jd_skills.add(ct)
+    except Exception:
+        pass
 
     # Normalize resume skills for comparison
     resume_normalized = {normalize_skill(s) for s in resume_skills}
@@ -95,15 +92,21 @@ def compare_resume_with_jd(
     resume_skills: List[str],
     jd_text: str,
     jd_keywords: List[str],
-    embedder: SentenceTransformer,
-    nlp: spacy.Language,
+    embedder,
+    nlp,
+    jd_skills: Optional[List[str]] = None,
 ) -> Dict:
+    resume_terms        = list(dict.fromkeys((resume_keywords or []) + (resume_skills or [])))
     semantic_similarity = calculate_semantic_similarity(resume_text, jd_text, embedder)
-    matched_keywords    = identify_matched_keywords(resume_keywords, jd_keywords)
-    missing_keywords    = identify_missing_keywords(resume_keywords, jd_keywords)
-    skills_gap          = analyze_skills_gap(resume_skills, jd_text, nlp)
+    matched_keywords    = identify_matched_keywords(resume_terms, jd_keywords)
+    missing_keywords    = identify_missing_keywords(resume_terms, jd_keywords)
+    if jd_skills:
+        # Precise gap: JD-required/preferred skills the resume doesn't show
+        skills_gap = fuzzy_match_keywords(resume_terms, jd_skills, threshold=80)['missing'][:20]
+    else:
+        skills_gap = analyze_skills_gap(resume_skills, jd_text, nlp)
     match_percentage    = calculate_match_percentage(
-        resume_keywords, jd_keywords, semantic_similarity
+        resume_terms, jd_keywords, semantic_similarity
     )
 
     return {

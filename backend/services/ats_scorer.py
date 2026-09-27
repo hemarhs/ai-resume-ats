@@ -1,7 +1,7 @@
 import re
 import spacy
 import numpy as np
-from sentence_transformers import SentenceTransformer
+SentenceTransformer = object  # type hint only; real model injected at runtime
 from typing import Dict, List, Optional, Tuple
 
 from backend.utils.file_utils import log_warning
@@ -123,30 +123,50 @@ def validate_skills_with_projects(
         if isinstance(e, dict)
     ).strip()
 
+    # Evidence documents: every project + the experience section
+    docs, doc_names = [], []
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        techs = ' '.join(project.get('technologies', []) or [])
+        docs.append(f"{project.get('title', '')} {project.get('description', '')} {techs}".strip())
+        doc_names.append(project.get('title') or 'Untitled Project')
+    if experience_text:
+        docs.append(experience_text)
+        doc_names.append('Experience Section')
+
     validated_skills      = []
     unvalidated_skills    = []
     skill_project_mapping = {}
 
-    for skill in skills:
+    # Encode everything ONCE in two batches (was one encode per skill×project pair)
+    sim_matrix = None
+    if docs:
+        try:
+            skill_vecs = np.asarray(embedder.encode(list(skills), convert_to_tensor=False))
+            doc_vecs   = np.asarray(embedder.encode(docs, convert_to_tensor=False))
+            skill_vecs = skill_vecs / (np.linalg.norm(skill_vecs, axis=1, keepdims=True) + 1e-9)
+            doc_vecs   = doc_vecs / (np.linalg.norm(doc_vecs, axis=1, keepdims=True) + 1e-9)
+            sim_matrix = np.clip(skill_vecs @ doc_vecs.T, 0.0, 1.0)
+        except Exception as e:
+            log_warning(f'Batch embedding failed, using substring matching only: {e}', context='ats_scorer')
+
+    for i, skill in enumerate(skills):
         matching_projects = []
         max_similarity    = 0.0
-
-        for project in projects:
-            project_text = f"{project.get('title', '')} {project.get('description', '')}"
-            matched, sim = _skill_matches(skill, project_text, embedder, threshold)
+        for j, doc in enumerate(docs):
+            if skill.lower() in doc.lower():
+                sim = 1.0
+            elif sim_matrix is not None:
+                sim = float(sim_matrix[i, j])
+            else:
+                sim = 0.0
             max_similarity = max(max_similarity, sim)
-
-            if matched:
-                matching_projects.append(project.get('title', 'Untitled Project'))
-
-        if experience_text:
-            matched, sim = _skill_matches(skill, experience_text, embedder, threshold)
-            max_similarity = max(max_similarity, sim)
-            if matched and 'Experience Section' not in matching_projects:
-                matching_projects.append('Experience Section')
+            if sim >= threshold and doc_names[j] not in matching_projects:
+                matching_projects.append(doc_names[j])
 
         if matching_projects:
-            validated_skills.append({'skill': skill, 'projects': matching_projects, 'similarity': max_similarity})
+            validated_skills.append({'skill': skill, 'projects': matching_projects, 'similarity': round(max_similarity, 3)})
             skill_project_mapping[skill] = matching_projects
         else:
             unvalidated_skills.append(skill)

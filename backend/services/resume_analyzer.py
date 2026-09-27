@@ -1,17 +1,15 @@
-import spacy
-from sentence_transformers import SentenceTransformer
 from typing import Dict, List, Optional
 from backend.models.schemas import IssueDetail
 from backend.services.groq_parser import parse_resume, parse_job_description
 from backend.services.jd_matcher import compare_resume_with_jd
-from backend.services.feedback_engine import analyze_issues, generate_issues_summary
+from backend.services.feedback_engine import analyze_issues, generate_issues_summary, jd_issues, evidence_issue
 from backend.services.ats_scorer import calculate_overall_score, validate_skills_with_projects
 
 
 def analyze_full_resume(
     resume_text: str,
-    nlp: spacy.Language,
-    embedder: SentenceTransformer,
+    nlp,
+    embedder,
     job_description: Optional[str] = None,
 ) -> Dict:
     import logging
@@ -50,10 +48,11 @@ def analyze_full_resume(
     jd_keywords = None
     if job_description and job_description.strip():
         parsed_jd = parse_job_description(job_description.strip())
-        jd_keywords = list(set(
-            parsed_jd.get('keywords', []) +
-            parsed_jd.get('required_skills', []) +
-            parsed_jd.get('preferred_skills', [])
+        jd_skill_list = list(dict.fromkeys(
+            [str(x) for x in parsed_jd.get('required_skills', []) + parsed_jd.get('preferred_skills', []) if x]
+        ))
+        jd_keywords = list(dict.fromkeys(
+            [str(x) for x in parsed_jd.get('keywords', []) if x] + jd_skill_list
         ))
         jd_comparison_result = compare_resume_with_jd(
             resume_text=resume_text,
@@ -63,7 +62,9 @@ def analyze_full_resume(
             jd_keywords=jd_keywords,
             embedder=embedder,
             nlp=nlp,
+            jd_skills=[str(x) for x in parsed_jd.get('required_skills', []) if x] or jd_skill_list,
         )
+        jd_comparison_result['job_title'] = parsed_jd.get('job_title', '')
 
     from backend.utils.file_utils import (
         get_default_grammar_results, get_default_location_results,
@@ -93,6 +94,10 @@ def analyze_full_resume(
         scores=scores,
         contact_info=contact_info,
     )
+
+    if jd_comparison_result:
+        detailed_feedback.extend(jd_issues(jd_comparison_result))
+    detailed_feedback.extend(evidence_issue(skill_validation))
 
     issues_summary = generate_issues_summary(detailed_feedback)
 
@@ -142,6 +147,21 @@ def analyze_full_resume(
         "interpretation":    scores.get('overall_interpretation', ''),
         "skill_validation_details": skill_validation_details,
         "experience_months": experience_months,
+        "candidate": {
+            "name":  parsed_resume.get('name', ''),
+            "email": parsed_resume.get('email'),
+            "phone": parsed_resume.get('phone'),
+            "linkedin": parsed_resume.get('linkedin'),
+            "github": parsed_resume.get('github'),
+        },
+        "stats": {
+            "skills":       len(skills),
+            "projects":     len(projects),
+            "experience":   len(parsed_resume.get('experience', [])),
+            "action_verbs": len(action_verbs),
+            "words":        len(resume_text.split()),
+        },
+        "parser": parsed_resume.get('_parser', 'groq'),
     }
 
 

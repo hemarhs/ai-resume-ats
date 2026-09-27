@@ -8,9 +8,10 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 logger = logging.getLogger('ats_resume_scorer')
 logger.setLevel(logging.INFO)
+logger.propagate = False
 
 # Simplified file handler - only basic logs
-file_handler = logging.FileHandler(os.path.join(LOG_DIR, "ats_scorer.log"))
+file_handler = logging.FileHandler(os.path.join(LOG_DIR, "ats_scorer.log"), encoding="utf-8")
 file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(logging.Formatter(
     '%(asctime)s - %(levelname)s - %(message)s'
@@ -18,7 +19,7 @@ file_handler.setFormatter(logging.Formatter(
 
 # Simplified console handler
 console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setLevel(logging.WARNING)
+console_handler.setLevel(logging.INFO)
 console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
 
 if not logger.handlers:

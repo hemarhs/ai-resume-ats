@@ -1,108 +1,206 @@
-import logging
-import jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+"""
+Built-in authentication.
 
-from backend.core.config import SUPABASE_JWT_SECRET, SUPABASE_URL
+ • Email + password  → PBKDF2-SHA256 hashed (stdlib, 260k iterations, per-user salt)
+ • Google sign-in    → Google Identity Services ID token, verified against Google's JWKS
+ • Sessions          → HS256 JWT signed with APP_SECRET_KEY, sent as  Authorization: Bearer <token>
+"""
+import base64
+import hashlib
+import hmac
+import logging
+import os
+import re
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
+
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
+
+from backend.core.config import APP_SECRET_KEY, GOOGLE_CLIENT_ID, TOKEN_TTL_DAYS
+from backend.database import db
 
 logger = logging.getLogger('ats_resume_scorer')
 
-_bearer_scheme = HTTPBearer(auto_error=False)
+router = APIRouter(prefix='/api/v1/auth', tags=['Auth'])
+_bearer = HTTPBearer(auto_error=False)
 
-_ASYMMETRIC_ALGS = ['ES256', 'RS256']
-
-_jwks_client: jwt.PyJWKClient | None = None
-
-
-def _get_jwks_client() -> jwt.PyJWKClient | None:
-    global _jwks_client
-    if _jwks_client is not None:
-        return _jwks_client
-    if not SUPABASE_URL:
-        return None
-    jwks_url = f"{SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json"
-    _jwks_client = jwt.PyJWKClient(jwks_url, cache_keys=True, lifespan=3600)
-    return _jwks_client
+EMAIL_RE = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+_PBKDF2_ITER = 260_000
 
 
-def _verify_token(token: str) -> dict:
-    header = jwt.get_unverified_header(token)
-    alg = header.get('alg')
-
-    if alg in _ASYMMETRIC_ALGS:
-        jwks_client = _get_jwks_client()
-        if jwks_client is None:
-            raise jwt.InvalidTokenError(
-                'SUPABASE_URL not configured — cannot fetch JWKS to verify token'
-            )
-        signing_key = jwks_client.get_signing_key_from_jwt(token).key
-        return jwt.decode(
-            token,
-            signing_key,
-            algorithms=_ASYMMETRIC_ALGS,
-            audience='authenticated',
-        )
-
-    if alg == 'HS256':
-        if not SUPABASE_JWT_SECRET:
-            raise jwt.InvalidTokenError(
-                'HS256 token received but SUPABASE_JWT_SECRET is not configured'
-            )
-        return jwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=['HS256'],
-            audience='authenticated',
-        )
-
-    raise jwt.InvalidTokenError(f'Unsupported JWT algorithm: {alg}')
+# ───────────────────────── password hashing ─────────────────────────
+def hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    dk = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, _PBKDF2_ITER)
+    return f'pbkdf2_sha256${_PBKDF2_ITER}${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}'
 
 
-def get_current_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> str:
-    if creds is None or not creds.credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Missing Authorization: Bearer <token> header',
-            headers={'WWW-Authenticate': 'Bearer'},
-        )
-
-    if not SUPABASE_URL and not SUPABASE_JWT_SECRET:
-        logger.error('Neither SUPABASE_URL (for JWKS) nor SUPABASE_JWT_SECRET configured — cannot verify tokens')
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail='Auth not configured on the server',
-        )
-
+def verify_password(password: str, stored: Optional[str]) -> bool:
     try:
-        payload = _verify_token(creds.credentials)
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Token expired — sign in again',
-            headers={'WWW-Authenticate': 'Bearer'},
-        )
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f'Invalid token: {exc}',
-            headers={'WWW-Authenticate': 'Bearer'},
-        )
-    except Exception as exc:
-        # PyJWKClient can raise network errors fetching JWKS; surface them as 401
-        # so a misconfigured backend doesn't look like a 500 to the user.
-        logger.warning(f'JWT verification failed: {exc}')
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f'Token verification failed: {exc}',
-            headers={'WWW-Authenticate': 'Bearer'},
-        )
+        _, iters, salt_b64, hash_b64 = (stored or '').split('$')
+        dk = hashlib.pbkdf2_hmac('sha256', password.encode(), base64.b64decode(salt_b64), int(iters))
+        return hmac.compare_digest(dk, base64.b64decode(hash_b64))
+    except Exception:
+        return False
 
-    user_id = payload.get('sub')
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Token missing subject claim',
+
+# ───────────────────────── tokens ─────────────────────────
+def create_token(user: Dict) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        'sub': user['id'],
+        'email': user['email'],
+        'iat': now,
+        'exp': now + timedelta(days=TOKEN_TTL_DAYS),
+    }
+    return jwt.encode(payload, APP_SECRET_KEY, algorithm='HS256')
+
+
+def _public_user(u: Dict) -> Dict:
+    return {
+        'id': u['id'],
+        'email': u['email'],
+        'name': u.get('name') or u['email'].split('@')[0],
+        'avatar_url': u.get('avatar_url'),
+        'provider': u.get('provider', 'password'),
+    }
+
+
+def _session(u: Dict) -> Dict:
+    return {'access_token': create_token(u), 'token_type': 'bearer', 'user': _public_user(u)}
+
+
+def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> str:
+    if creds is None or not creds.credentials:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'Please sign in to continue.',
+                            headers={'WWW-Authenticate': 'Bearer'})
+    try:
+        payload = jwt.decode(creds.credentials, APP_SECRET_KEY, algorithms=['HS256'])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'Session expired — please sign in again.')
+    except jwt.InvalidTokenError:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'Invalid session — please sign in again.')
+    return payload['sub']
+
+
+# ───────────────────────── request models ─────────────────────────
+class SignUpIn(BaseModel):
+    email: str
+    password: str
+    name: str = ''
+
+
+class SignInIn(BaseModel):
+    email: str
+    password: str
+
+
+class GoogleIn(BaseModel):
+    credential: str
+
+
+# ───────────────────────── endpoints ─────────────────────────
+@router.post('/signup')
+async def signup(body: SignUpIn):
+    email = body.email.strip().lower()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, 'Please enter a valid email address.')
+    if len(body.password) < 8:
+        raise HTTPException(400, 'Password must be at least 8 characters.')
+
+    existing = await run_in_threadpool(db.fetch_one, 'SELECT * FROM users WHERE email=?', (email,))
+    if existing:
+        if existing.get('password_hash'):
+            raise HTTPException(409, 'An account with this email already exists — sign in instead.')
+        # Google-only account adding a password
+        await run_in_threadpool(db.execute, 'UPDATE users SET password_hash=? WHERE id=?',
+                                (hash_password(body.password), existing['id']))
+        return _session(existing)
+
+    user = {
+        'id': str(uuid.uuid4()),
+        'email': email,
+        'name': body.name.strip() or email.split('@')[0],
+        'avatar_url': None,
+        'provider': 'password',
+    }
+    pw_hash = await run_in_threadpool(hash_password, body.password)
+    await run_in_threadpool(
+        db.execute,
+        'INSERT INTO users (id, email, name, avatar_url, password_hash, provider, created_at) VALUES (?,?,?,?,?,?,?)',
+        (user['id'], email, user['name'], None, pw_hash, 'password', datetime.now(timezone.utc).isoformat()),
+    )
+    logger.info(f'New user signed up: {email}')
+    return _session(user)
+
+
+@router.post('/signin')
+async def signin(body: SignInIn):
+    email = body.email.strip().lower()
+    user = await run_in_threadpool(db.fetch_one, 'SELECT * FROM users WHERE email=?', (email,))
+    if not user:
+        raise HTTPException(401, 'No account found for this email — create one first.')
+    if not user.get('password_hash'):
+        raise HTTPException(401, 'This account uses Google sign-in. Use "Continue with Google".')
+    ok = await run_in_threadpool(verify_password, body.password, user['password_hash'])
+    if not ok:
+        raise HTTPException(401, 'Wrong email or password.')
+    return _session(user)
+
+
+_google_jwks: Optional[jwt.PyJWKClient] = None
+
+
+def _verify_google(credential: str) -> Dict:
+    global _google_jwks
+    if _google_jwks is None:
+        _google_jwks = jwt.PyJWKClient('https://www.googleapis.com/oauth2/v3/certs', cache_keys=True)
+    key = _google_jwks.get_signing_key_from_jwt(credential).key
+    return jwt.decode(
+        credential, key, algorithms=['RS256'], audience=GOOGLE_CLIENT_ID,
+        issuer=['https://accounts.google.com', 'accounts.google.com'],
+    )
+
+
+@router.post('/google')
+async def google_signin(body: GoogleIn):
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(501, 'Google sign-in is not configured (set GOOGLE_CLIENT_ID in .env).')
+    try:
+        info = await run_in_threadpool(_verify_google, body.credential)
+    except Exception as exc:
+        logger.warning(f'Google token verification failed: {exc}')
+        raise HTTPException(401, 'Google sign-in failed — please try again.')
+    if not info.get('email_verified'):
+        raise HTTPException(401, 'Your Google email is not verified.')
+
+    email = info['email'].lower()
+    user = await run_in_threadpool(db.fetch_one, 'SELECT * FROM users WHERE email=?', (email,))
+    if not user:
+        user = {
+            'id': str(uuid.uuid4()), 'email': email,
+            'name': info.get('name') or email.split('@')[0],
+            'avatar_url': info.get('picture'), 'provider': 'google',
+        }
+        await run_in_threadpool(
+            db.execute,
+            'INSERT INTO users (id, email, name, avatar_url, password_hash, provider, created_at) VALUES (?,?,?,?,?,?,?)',
+            (user['id'], email, user['name'], user['avatar_url'], None, 'google', datetime.now(timezone.utc).isoformat()),
         )
-    return user_id
+    elif info.get('picture') and not user.get('avatar_url'):
+        await run_in_threadpool(db.execute, 'UPDATE users SET avatar_url=? WHERE id=?', (info['picture'], user['id']))
+        user['avatar_url'] = info['picture']
+    return _session(user)
+
+
+@router.get('/me')
+async def me(user_id: str = Depends(get_current_user)):
+    user = await run_in_threadpool(db.fetch_one, 'SELECT * FROM users WHERE id=?', (user_id,))
+    if not user:
+        raise HTTPException(401, 'Account no longer exists — please sign in again.')
+    return _public_user(user)

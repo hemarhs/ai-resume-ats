@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ATSight — see your resume the way the bots do</title>
+  <meta name="description" content="AI resume scanner: ATS score, job-description match, skill evidence and a fix-list — in seconds." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230c0b10'/%3E%3Ccircle cx='32' cy='32' r='16' fill='none' stroke='%23c8ff2e' stroke-width='6'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23c8ff2e'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300..800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="cursor-glow" aria-hidden="true"></div>
+
+  <!-- ─────────────── NAV ─────────────── -->
+  <header class="nav" id="nav">
+    <a href="#/" class="brand" aria-label="ATSight home">
+      <span class="brand-eye"><i></i></span>
+      <span class="brand-word">ATS<em>ight</em></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#/" data-route="/">Home</a>
+      <a href="#/scan" data-route="/scan">Scanner</a>
+      <a href="#/history" data-route="/history">History</a>
+      <a href="#/playbook" data-route="/playbook">Playbook</a>
+    </nav>
+    <div class="nav-right" id="navRight"></div>
+    <button class="burger" id="burger" aria-label="Menu"><span></span><span></span></button>
+  </header>
+
+  <main id="app" tabindex="-1"></main>
+
+  <!-- ─────────────── AUTH MODAL ─────────────── -->
+  <div class="modal" id="authModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close></div>
+    <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <button class="icon-btn modal-x" data-close aria-label="Close">✕</button>
+      <aside class="auth-art">
+        <div class="auth-art-inner">
+          <p class="mono tiny dim">// ACCESS REQUIRED</p>
+          <h3 class="serif">Every scan,<br><em>saved</em> to your<br>own vault.</h3>
+          <div class="auth-rings" aria-hidden="true"><i></i><i></i><i></i></div>
+          <ul class="mono tiny">
+            <li><b>✦</b> Score history & trends</li>
+            <li><b>✦</b> Re-open any report</li>
+            <li><b>✦</b> Private to you</li>
+          </ul>
+        </div>
+      </aside>
+      <section class="auth-form-wrap">
+        <div class="seg" role="tablist">
+          <button role="tab" class="seg-btn active" data-auth-tab="signin">Sign in</button>
+          <button role="tab" class="seg-btn" data-auth-tab="signup">Create account</button>
+          <span class="seg-pill"></span>
+        </div>
+        <h2 id="authTitle" class="auth-title">Welcome back.</h2>
+        <p class="dim auth-sub">Sign in to scan resumes and keep your history.</p>
+
+        <div id="googleWrap" class="google-wrap hidden">
+          <div id="googleBtn"></div>
+          <div class="or"><span>or with email</span></div>
+        </div>
+
+        <form id="authForm" novalidate>
+          <label class="field name-field hidden">
+            <span>Name</span>
+            <input name="name" autocomplete="name" placeholder="Hema" />
+          </label>
+          <label class="field">
+            <span>Email</span>
+            <input name="email" type="email" autocomplete="email" placeholder="you@domain.com" required />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input name="password" type="password" autocomplete="current-password" placeholder="••••••••" required minlength="8" />
+          </label>
+          <p class="form-error" id="authError" role="alert"></p>
+          <button class="btn btn-lime btn-block" type="submit" id="authSubmit">
+            <span>Sign in</span><i class="arrow">→</i>
+          </button>
+        </form>
+      </section>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toasts" aria-live="polite"></div>
+
+  <script src="/assets/config.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+# Render Blueprint — New → Blueprint → pick this repo
+services:
+  - type: web
+    name: atsight-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements-render.txt && python -m spacy download en_core_web_sm
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SPACY_MODEL
+        value: en_core_web_sm
+      - key: APP_SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

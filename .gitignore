@@ -1,14 +1,18 @@
-.DS_Store
+# secrets
+.env
+*.secret*
+frontend/.streamlit/secrets.toml
 
+# local data
+data/
+backend/logs/
+
+# python
+venv/
+.venv/
 __pycache__/
+*.pyc
+.ipynb_checkpoints/
 
-
-# Datasets
-*.csv
-
-# Logs
-*.log
-
-# ML models
-*.safetensors
-*.pkl
+# old code parked for deletion
+_to_delete/

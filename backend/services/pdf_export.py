@@ -4,14 +4,14 @@ import logging
 try:
     from weasyprint import HTML, CSS
     WEASYPRINT_INSTALLED = True
-except ImportError:
+except Exception:   # ImportError, or OSError when GTK/Pango libs are missing (common on Windows)
     WEASYPRINT_INSTALLED = False
 
 logger = logging.getLogger('ats_resume_scorer')
 
 def generate_combined_pdf(html_docs: dict[str, str]) -> bytes:
     if not WEASYPRINT_INSTALLED:
-        raise ImportError("WeasyPrint is not installed. PDF generation unavailable.")
+        raise RuntimeError("WeasyPrint (or its GTK/Pango system libraries) is not available. Use the Export button in the web UI instead - it saves a PDF via your browser.")
         
     documents = []
     

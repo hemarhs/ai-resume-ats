@@ -1,5 +1,3 @@
-so yeah#what is specifically wrong in my resume?
-
 import re
 from typing import List, Dict, Any, Optional
 from backend.models.schemas import IssueDetail
@@ -413,3 +411,83 @@ def analyze_issues(
 def generate_issues_summary(detected_issues: List[IssueDetail]) -> List[str]:
     """Extract issue titles to formulate the issues_summary list."""
     return [issue.issue_title for issue in detected_issues]
+
+
+def jd_issues(jd: Dict) -> List[IssueDetail]:
+    """Issues driven by the job-description comparison."""
+    out: List[IssueDetail] = []
+    gap = [g for g in jd.get('skills_gap', []) if g]
+    missing = [m for m in jd.get('missing_keywords', []) if m and m not in gap]
+    match = float(jd.get('match_percentage', 0) or 0)
+
+    if gap:
+        out.append(IssueDetail(
+            issue_title="Required Skills From the Job Post Are Missing",
+            severity_level="High" if len(gap) >= 3 else "Moderate",
+            ats_impact="High",
+            explanation=(
+                f"The job description asks for {len(gap)} skill(s) that don't appear anywhere in your resume. "
+                "ATS filters are often configured to reject resumes missing must-have skills."
+            ),
+            where_it_appears=f"Not found: {', '.join(gap[:8])}",
+            how_to_fix=(
+                "If you have used these skills, add them to your Skills section AND mention them in a project "
+                "or experience bullet. If you haven't, consider a small project to close the gap before applying."
+            ),
+            action_items=[f"Add '{g}' with real context (where/how you used it)" for g in gap[:5]] + [
+                "Use the exact spelling the job post uses",
+                "Don't list skills you can't talk about in an interview",
+            ],
+            example_improvement=(
+                f"Template: <Action verb> <what you built> using {gap[0]} — <measurable result>\n"
+                f"e.g. • Implemented a feature using {gap[0]} that cut processing time by 30%"
+            ),
+        ))
+    if missing:
+        out.append(IssueDetail(
+            issue_title="Job-Post Keywords Not Reflected in Resume",
+            severity_level="Moderate" if match < 60 else "Low",
+            ats_impact="Medium",
+            explanation=(
+                f"Your resume matches {match:.0f}% of this job description. {len(missing)} relevant keyword(s) "
+                "from the posting are absent, which lowers your ranking in keyword-based ATS searches."
+            ),
+            where_it_appears=f"Missing: {', '.join(missing[:8])}",
+            how_to_fix=(
+                "Mirror the job post's language in your summary and bullet points where it is truthful. "
+                "Recruiters search the ATS using these exact terms."
+            ),
+            action_items=[f"Work '{m}' into a relevant bullet or your summary" for m in missing[:5]] + [
+                "Tailor your professional summary to this specific role",
+            ],
+            example_improvement=(
+                "Before: Built backend services for the product.\n"
+                f"After:  Built {missing[0]}-based backend services handling 5K requests/day."
+            ),
+        ))
+    return out
+
+
+def evidence_issue(skill_validation: Dict) -> List[IssueDetail]:
+    """Softer nudge when a sizeable share of skills lack evidence (the stronger issue covers >50%)."""
+    unval = skill_validation.get('unvalidated_skills', [])
+    val = skill_validation.get('validated_skills', [])
+    total = len(unval) + len(val)
+    if not total or len(unval) > len(val) or len(unval) / total < 0.35:
+        return []
+    return [IssueDetail(
+        issue_title="Some Skills Have No Supporting Evidence",
+        severity_level="Low",
+        ats_impact="Medium",
+        explanation=(
+            f"{len(unval)} of {total} listed skills aren't mentioned in any project or role. "
+            "Backing skills with evidence makes them credible to recruiters and semantic ATS matchers."
+        ),
+        where_it_appears=f"Unsupported: {', '.join(unval[:8])}",
+        how_to_fix="Reference each of these skills in at least one project or experience bullet, or trim the ones you rarely use.",
+        action_items=[f"Show where you used '{u}'" for u in unval[:5]],
+        example_improvement=(
+            f"Skill listed: {unval[0]}\n"
+            f"Add proof:   • Used {unval[0]} in <project/role> to <outcome>, e.g. 'saving 5 hrs/week'"
+        ),
+    )]

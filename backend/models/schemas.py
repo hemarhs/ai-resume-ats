@@ -14,6 +14,7 @@ class JDComparison(BaseModel):
     matched_keywords: List[str]
     missing_keywords: List[str]
     skills_gap: List[str]
+    job_title: str = ""
 
 class SkillValidationDetails(BaseModel):
     validated: List[Dict[str, Any]] = []       # [{'skill': str, 'projects': [str]}]
@@ -51,3 +52,12 @@ class AnalysisResponse(BaseModel):
     jd_comparison: Optional[JDComparison] = None
     warnings: List[str] = []
     interpretation: str = ""
+
+    # Extra context for the UI
+    id: Optional[str] = None
+    filename: str = ""
+    created_at: str = ""
+    candidate: Dict[str, Any] = {}
+    stats: Dict[str, Any] = {}
+    experience_months: int = 0
+    parser: str = ""
