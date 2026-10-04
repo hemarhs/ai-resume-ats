@@ -257,6 +257,11 @@
     $('#nav').classList.remove('open');
     $$('.nav-links a').forEach((a) => a.classList.toggle('active', a.dataset.route === path));
 
+    if (protectedRoutes.has(path) && S.token && !S.user && !S.booted) {
+      app.innerHTML = '<section class="page wrap"><div class="dim mono">connecting to server…</div></section>';
+      S.ready.then(route);
+      return;
+    }
     if (protectedRoutes.has(path) && !S.user) {
       S.pendingRoute = location.hash;
       if (path !== '/') { viewLanding(); openAuth('signin', 'Sign in to use the scanner.'); }
@@ -984,9 +989,14 @@ Nice to have:
     $('#burger').addEventListener('click', () => $('#nav').classList.toggle('open'));
     bindAuthModal();
     initCursorGlow();
-    try { S.config = await api('/config', { auth: false }); } catch { S.config = {}; }
-    await restoreSession();
     renderNav();
+    // Talk to the backend in the background — the free Render server may be asleep (~1 min wake-up),
+    // so the page must never wait on it to render.
+    const slow = setTimeout(() => toast('Waking up the server — the first load can take up to a minute…', 'ok', 8000), 3500);
+    S.ready = (async () => {
+      try { S.config = await api('/config', { auth: false }); } catch { S.config = {}; }
+      await restoreSession();
+    })().finally(() => { clearTimeout(slow); S.booted = true; renderNav(); });
     addEventListener('hashchange', route);
     route();
   }
